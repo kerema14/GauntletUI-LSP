@@ -213,7 +213,7 @@ function loadSchema() {
                             spritesSet.add(sprite as any);
                         } else if (sprite && sprite.name) {
                             spritesSet.add(sprite.name);
-                            spritesMap.set(sprite.name.toLowerCase(), sprite);
+                            spritesMap.set(sprite.name, sprite);
                         }
                     }
                 }
@@ -1409,8 +1409,11 @@ async function ensureSpriteCroppedImage(sprite: SpriteInfo, docUri?: string): Pr
 }
 
 async function getSpriteHover(spriteName: string, docUri?: string): Promise<Hover | null> {
-    const sprite = spritesMap.get(spriteName.toLowerCase());
-    if (!sprite) return null;
+    const sprite = spritesMap.get(spriteName);
+    if (!sprite) {
+        connection.console.warn(`Hover requested for unknown sprite: ${spriteName}`);
+        return null;
+    }
 
     let md = `**Sprite**: \`${sprite.name}\`\n\n`;
     if (sprite.categoryName) {
@@ -1478,8 +1481,8 @@ connection.onHover(async (params: TextDocumentPositionParams): Promise<Hover | n
             }
 
             if (hoveredValue) {
-                const spriteLeaf = getSpriteLeafName(hoveredValue);
-                hoverResult = await getSpriteHover(spriteLeaf, document.uri);
+                //const spriteLeaf = getSpriteLeafName(hoveredValue);
+                hoverResult = await getSpriteHover(hoveredValue, document.uri);
             }
         }
     }

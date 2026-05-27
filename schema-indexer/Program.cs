@@ -676,25 +676,19 @@ namespace GauntletUISchemaIndexer
                     }
 
                     // 3. Include SpritePart entries not referenced by any Sprite entry
-                    //    Use the leaf name (after the last backslash) as the sprite name
                     foreach (var kvp in spriteParts)
                     {
                         if (referencedParts.Contains(kvp.Key))
                             continue;
 
-                        string leafName = kvp.Key;
-                        int lastSlash = kvp.Key.LastIndexOf('\\');
-                        if (lastSlash >= 0 && lastSlash < kvp.Key.Length - 1)
-                        {
-                            leafName = kvp.Key.Substring(lastSlash + 1);
-                        }
+                        string spriteName = kvp.Key;
 
-                        if (!spriteMap.ContainsKey(leafName))
+                        if (!spriteMap.ContainsKey(spriteName))
                         {
                             var info = kvp.Value;
-                            spriteMap[leafName] = new SpriteInfoModel
+                            spriteMap[spriteName] = new SpriteInfoModel
                             {
-                                name = leafName,
+                                name = spriteName,
                                 categoryName = info.categoryName,
                                 sheetId = info.sheetId,
                                 x = info.x,
