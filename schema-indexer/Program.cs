@@ -541,22 +541,22 @@ namespace GauntletUISchemaIndexer
             var files = Directory.GetFiles(resourcePath, "*.xml", SearchOption.AllDirectories);
             foreach (var file in files)
             {
-                var normalized = file.Replace('\\', '/');
-                if (normalized.Contains("/GUI/SpriteData/") || normalized.Contains("/SpriteData/"))
+                if (Path.GetFileName(file).Contains("SpriteData", StringComparison.OrdinalIgnoreCase))
                 {
                     try
                     {
-                        using var stream = File.OpenRead(file);
-                        using var reader = XmlReader.Create(stream);
-                        while (reader.Read())
+                        var doc = System.Xml.Linq.XDocument.Load(file);
+                        var elements = doc.Descendants().Where(el => el.Name.LocalName == "SpritePart" || el.Name.LocalName == "Sprite" || el.Name.LocalName == "SpriteGeneric");
+                        foreach (var el in elements)
                         {
-                            if (reader.NodeType == XmlNodeType.Element && (reader.Name == "SpritePart" || reader.Name == "Sprite" || reader.Name == "SpriteGeneric"))
+                            string name = el.Attribute("Name")?.Value ?? el.Attribute("id")?.Value;
+                            if (string.IsNullOrEmpty(name))
                             {
-                                string name = reader.GetAttribute("Name") ?? reader.GetAttribute("id");
-                                if (!string.IsNullOrEmpty(name))
-                                {
-                                    spriteNames.Add(name);
-                                }
+                                name = el.Element("Name")?.Value ?? el.Element("id")?.Value;
+                            }
+                            if (!string.IsNullOrEmpty(name))
+                            {
+                                spriteNames.Add(name);
                             }
                         }
                     }
