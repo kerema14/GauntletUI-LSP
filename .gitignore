@@ -1,0 +1,38 @@
+# TaleWorlds Binaries & Decompiled Sources (hard constraint)
+refs/
+refs-src/
+
+# Node dependencies & lock files
+node_modules/
+
+# TypeScript build outputs
+vscode-extension/dist/
+vscode-extension/out/
+*.tsbuildinfo
+
+# VS Code extension package output
+vscode-extension/*.vsix
+*.vsix
+
+# .NET / C# Build outputs & user settings
+bin/
+obj/
+schema-indexer/bin/
+schema-indexer/obj/
+schema-indexer/gauntlet-schema.json
+/gauntlet-schema.json
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test files & XML configs
+test-files/

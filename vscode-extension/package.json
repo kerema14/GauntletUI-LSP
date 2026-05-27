@@ -1,0 +1,78 @@
+{
+  "name": "vscode-gauntletui-lsp",
+  "displayName": "GauntletUI LSP",
+  "description": "IntelliSense and support for Mount & Blade II: Bannerlord GauntletUI prefabs.",
+  "version": "0.1.0",
+  "publisher": "kerem",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.89.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:xml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "GauntletUI LSP Configuration",
+      "properties": {
+        "gauntletui.gamePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Mount & Blade II: Bannerlord game folder (contains bin and modules)."
+        },
+        "gauntletui.schemaPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to custom generated gauntlet-schema.json file. If empty, the extension will generate one or use workspace root's schema."
+        },
+        "gauntletui.fileGlob": {
+          "type": "string",
+          "default": "**/GUI/**/*.xml",
+          "description": "Glob pattern for GauntletUI XML prefab files to activate on."
+        },
+        "gauntletui.viewModelMapping": {
+          "type": "object",
+          "default": {},
+          "description": "Mapping from prefab file names to ViewModel class names, e.g. { \"ClanScreen\": \"ClanVM\" }."
+        },
+        "gauntletui.diagnosticsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable basic diagnostics/validation for tags and attributes."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[xml]": {
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": true
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "node esbuild.js",
+    "compile": "tsc -b",
+    "watch": "tsc -b -w",
+    "build": "node esbuild.js",
+    "package": "npx vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@types/vscode": "^1.89.0",
+    "esbuild": "^0.21.4",
+    "typescript": "^5.4.5",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  }
+}
