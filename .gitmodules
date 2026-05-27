@@ -1,0 +1,3 @@
+[submodule "tpac-tool"]
+	path = tpac-tool
+	url = https://github.com/kerema14/TpacTool.git

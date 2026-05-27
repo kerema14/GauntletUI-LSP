@@ -36,3 +36,7 @@ Thumbs.db
 
 # Test files & XML configs
 test-files/
+
+# Sprite preview cache (generated on-demand by LSP)
+.gauntletui-cache/
+

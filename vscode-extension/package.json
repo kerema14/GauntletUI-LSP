@@ -65,10 +65,12 @@
     "package": "npx vsce package"
   },
   "dependencies": {
+    "pngjs": "^7.0.0",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",
+    "@types/pngjs": "^6.0.5",
     "@types/vscode": "^1.89.0",
     "esbuild": "^0.21.4",
     "typescript": "^5.4.5",

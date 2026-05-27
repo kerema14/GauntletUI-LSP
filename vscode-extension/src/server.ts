@@ -25,6 +25,9 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { execFile } from 'child_process';
+import { PNG } from 'pngjs';
 import { getContext, PositionContext } from './parser';
 
 const connection = createConnection(ProposedFeatures.all);
@@ -53,13 +56,23 @@ interface ViewModelInfo {
     methods: string[];
 }
 
+interface SpriteInfo {
+    name: string;
+    categoryName: string;
+    sheetId: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
 interface Schema {
     structuralTags: string[];
     specialAttributes: string[];
     widgets: WidgetInfo[];
     enums: { [key: string]: string[] };
     brushes: string[];
-    sprites: string[];
+    sprites: SpriteInfo[];
     viewModels: ViewModelInfo[];
 }
 
@@ -91,6 +104,7 @@ let structuralTagsSet = new Set<string>();
 let specialAttributesSet = new Set<string>();
 let brushesSet = new Set<string>();
 let spritesSet = new Set<string>();
+const spritesMap = new Map<string, SpriteInfo>();
 
 // Indexing Cache
 let lastIndexedGamePath: string | null = null;
@@ -190,7 +204,19 @@ function loadSchema() {
                 structuralTagsSet = new Set(schema.structuralTags || []);
                 specialAttributesSet = new Set(schema.specialAttributes || []);
                 brushesSet = new Set(schema.brushes || []);
-                spritesSet = new Set(schema.sprites || []);
+                
+                spritesSet.clear();
+                spritesMap.clear();
+                if (schema.sprites) {
+                    for (const sprite of schema.sprites) {
+                        if (typeof (sprite as any) === 'string') {
+                            spritesSet.add(sprite as any);
+                        } else if (sprite && sprite.name) {
+                            spritesSet.add(sprite.name);
+                            spritesMap.set(sprite.name.toLowerCase(), sprite);
+                        }
+                    }
+                }
                 
                 if (schema.widgets) {
                     for (const widget of schema.widgets) {
@@ -1135,10 +1161,12 @@ function handleAttributeValueCompletion(context: PositionContext, document: Text
     // 4. Sprites
     if (attrName === 'Sprite' || attrName === 'SpriteName' || attr?.type === 'Sprite') {
         for (const sprite of schema.sprites) {
+            const name = typeof (sprite as any) === 'string' ? (sprite as any) : sprite.name;
+            const category = typeof (sprite as any) === 'string' ? '' : sprite.categoryName;
             items.push({
-                label: sprite,
+                label: name,
                 kind: CompletionItemKind.File,
-                detail: 'Sprite Resource'
+                detail: category ? `Sprite Resource (${category})` : 'Sprite Resource'
             });
         }
     }
@@ -1244,8 +1272,172 @@ connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
     return item;
 });
 
+function getWorkspaceRootPath(): string | null {
+    if (!workspaceRootUri) return null;
+    let rootPath = workspaceRootUri.replace('file:///', '').replace('file://', '');
+    rootPath = decodeURIComponent(rootPath);
+    if (process.platform === 'win32' && rootPath.startsWith('/')) {
+        rootPath = rootPath.substring(1);
+    }
+    return rootPath;
+}
+
+function getWorkspaceRootPathForDoc(docUri?: string): string | null {
+    const rootPath = getWorkspaceRootPath();
+    if (!rootPath) return null;
+    if (!docUri) return rootPath;
+
+    let docPath = docUri.replace('file:///', '').replace('file://', '');
+    docPath = decodeURIComponent(docPath);
+    if (process.platform === 'win32' && docPath.startsWith('/')) {
+        docPath = docPath.substring(1);
+    }
+
+    // Check if docPath is under rootPath
+    const relative = path.relative(rootPath, docPath);
+    const isUnder = relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+    if (isUnder || docPath.toLowerCase() === rootPath.toLowerCase()) {
+        return rootPath;
+    }
+    return null; // Outside workspace
+}
+
+function getCacheDir(docUri?: string): string {
+    const rootPath = getWorkspaceRootPathForDoc(docUri);
+    if (rootPath) {
+        return path.join(rootPath, '.gauntletui-cache');
+    }
+    return path.join(os.tmpdir(), '.gauntletui-cache');
+}
+
+function getIndexerPath(): string {
+    const exePath = path.join(__dirname, '..', 'bin', 'schema-indexer.exe');
+    if (fs.existsSync(exePath)) {
+        return exePath;
+    }
+    const dllPath = path.join(__dirname, '..', 'bin', 'schema-indexer.dll');
+    if (fs.existsSync(dllPath)) {
+        return dllPath;
+    }
+    const devExePath = path.join(__dirname, '..', '..', 'schema-indexer', 'bin', 'Debug', 'net8.0', 'schema-indexer.exe');
+    if (fs.existsSync(devExePath)) {
+        return devExePath;
+    }
+    return '';
+}
+
+function extractSheetPng(sheetName: string, outputPath: string, cropX = 0, cropY = 0, cropW = 0, cropH = 0): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const indexer = getIndexerPath();
+        if (!indexer) {
+            return reject(new Error('Schema indexer binary not found.'));
+        }
+
+        const gamePath = globalSettings.gauntletui.gamePath || process.env.BANNERLORD_GAME_DIR || '';
+        const resourcePath = gamePath ? path.join(gamePath, 'Modules') : '';
+        const gameBinPath = gamePath ? path.join(gamePath, 'bin', 'Win64_Shipping_Client') : '';
+
+        const args: string[] = [
+            '--game-bin-path', gameBinPath,
+            '--resource-path', resourcePath,
+            '--extract-sheet', sheetName,
+            '--output', outputPath
+        ];
+
+        if (cropW > 0 && cropH > 0) {
+            args.push('--crop-x', String(cropX));
+            args.push('--crop-y', String(cropY));
+            args.push('--crop-w', String(cropW));
+            args.push('--crop-h', String(cropH));
+        }
+
+        let cmd = indexer;
+        let finalArgs = args;
+        if (indexer.endsWith('.dll')) {
+            cmd = 'dotnet';
+            finalArgs = [indexer, ...args];
+        }
+
+        connection.console.log(`Running on-demand sheet extraction: ${cmd} ${finalArgs.join(' ')}`);
+
+        execFile(cmd, finalArgs, (error, stdout, stderr) => {
+            if (error) {
+                connection.console.error(`Sheet extraction failed: ${stderr || error.message}`);
+                return reject(error);
+            }
+            connection.console.log(`Sheet extraction succeeded for ${sheetName}`);
+            resolve();
+        });
+    });
+}
+
+function getSpriteLeafName(spriteValue: string): string {
+    const lastBackslash = spriteValue.lastIndexOf('\\');
+    const lastForwardSlash = spriteValue.lastIndexOf('/');
+    const lastIndex = Math.max(lastBackslash, lastForwardSlash);
+    if (lastIndex >= 0 && lastIndex < spriteValue.length - 1) {
+        return spriteValue.substring(lastIndex + 1);
+    }
+    return spriteValue;
+}
+
+async function ensureSpriteCroppedImage(sprite: SpriteInfo, docUri?: string): Promise<boolean> {
+    if (!sprite.categoryName || !sprite.sheetId || sprite.width <= 0 || sprite.height <= 0) {
+        return false;
+    }
+
+    const sheetName = `${sprite.categoryName}_${sprite.sheetId}`;
+    const cacheDir = getCacheDir(docUri);
+    const spritesCacheDir = path.join(cacheDir, 'sprites');
+    if (!fs.existsSync(spritesCacheDir)) {
+        fs.mkdirSync(spritesCacheDir, { recursive: true });
+    }
+
+    const cacheKey = sprite.name.toLowerCase();
+    const spriteCachePath = path.join(spritesCacheDir, `${cacheKey}.png`);
+
+    if (!fs.existsSync(spriteCachePath)) {
+        try {
+            await extractSheetPng(sheetName, spriteCachePath, sprite.x, sprite.y, sprite.width, sprite.height);
+        } catch (err: any) {
+            connection.console.error(`Failed on-demand sprite extraction for ${sprite.name}: ${err.message}`);
+            return false;
+        }
+    }
+
+    return fs.existsSync(spriteCachePath);
+}
+
+async function getSpriteHover(spriteName: string, docUri?: string): Promise<Hover | null> {
+    const sprite = spritesMap.get(spriteName.toLowerCase());
+    if (!sprite) return null;
+
+    let md = `**Sprite**: \`${sprite.name}\`\n\n`;
+    if (sprite.categoryName) {
+        md += `**Category**: \`${sprite.categoryName}\` (Sheet ${sprite.sheetId})\n\n`;
+        md += `**Dimensions**: \`${sprite.width}x${sprite.height}\` | **Coords**: \`(${sprite.x}, ${sprite.y})\`\n\n`;
+
+        const success = await ensureSpriteCroppedImage(sprite, docUri);
+        if (success) {
+            const cacheKey = sprite.name.toLowerCase();
+            md += `![Sprite Preview](sprites/${cacheKey}.png)\n\n`;
+        } else {
+            md += `*Preview unavailable (failed to extract sheet/crop)*\n\n`;
+        }
+    } else {
+        md += `*No sheet information in schema*\n\n`;
+    }
+
+    return {
+        contents: {
+            kind: MarkupKind.Markdown,
+            value: md
+        }
+    };
+}
+
 // Hover provider
-connection.onHover((params: TextDocumentPositionParams): Hover | null => {
+connection.onHover(async (params: TextDocumentPositionParams): Promise<Hover | null> => {
     const tStart = Date.now();
     const document = documents.get(params.textDocument.uri);
     if (!document) return null;
@@ -1258,8 +1450,42 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
     let hoverResult: Hover | null = null;
 
-    // If hovering a tag name
-    if (context.tagName && (context.type === 'tag' || context.type === 'attribute')) {
+    // Check if hovering a sprite attribute value
+    if (context.type === 'value' && context.attributeName) {
+        const isSpriteAttr = context.attributeName === 'Sprite' || 
+                             context.attributeName === 'SpriteName' ||
+                             (() => {
+                                 const widget = widgetMap.get(context.tagName);
+                                 if (widget && widget.attributes) {
+                                     const attr = widget.attributes.find(a => a.name === context.attributeName);
+                                     return attr?.type === 'Sprite';
+                                 }
+                                 return false;
+                             })();
+
+        if (isSpriteAttr) {
+            let hoveredValue = '';
+            if (context.quoteChar) {
+                let start = offset;
+                while (start > 0 && text[start] !== context.quoteChar) {
+                    start--;
+                }
+                let end = start + 1;
+                while (end < text.length && text[end] !== context.quoteChar) {
+                    end++;
+                }
+                hoveredValue = text.substring(start + 1, end).trim();
+            }
+
+            if (hoveredValue) {
+                const spriteLeaf = getSpriteLeafName(hoveredValue);
+                hoverResult = await getSpriteHover(spriteLeaf, document.uri);
+            }
+        }
+    }
+
+    // If no sprite hover, try regular tag/attribute hover
+    if (!hoverResult && context.tagName && (context.type === 'tag' || context.type === 'attribute')) {
         const widget = widgetMap.get(context.tagName);
         if (widget) {
             // Hovering attribute

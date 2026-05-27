@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace GauntletUISchemaIndexer
 {
@@ -31,6 +32,17 @@ namespace GauntletUISchemaIndexer
         public List<string> methods { get; set; }
     }
 
+    public class SpriteInfoModel
+    {
+        public string name { get; set; }
+        public string categoryName { get; set; }
+        public int sheetId { get; set; }
+        public int x { get; set; }
+        public int y { get; set; }
+        public int width { get; set; }
+        public int height { get; set; }
+    }
+
     public class SchemaModel
     {
         public List<string> structuralTags { get; set; }
@@ -38,7 +50,7 @@ namespace GauntletUISchemaIndexer
         public List<WidgetInfoModel> widgets { get; set; }
         public Dictionary<string, List<string>> enums { get; set; }
         public List<string> brushes { get; set; }
-        public List<string> sprites { get; set; }
+        public List<SpriteInfoModel> sprites { get; set; }
         public List<ViewModelInfoModel> viewModels { get; set; }
     }
 
@@ -49,6 +61,12 @@ namespace GauntletUISchemaIndexer
             string gameBinPath = "";
             string resourcePath = "";
             string outputPath = "gauntlet-schema.json";
+
+            string extractSheetName = "";
+            int cropX = 0;
+            int cropY = 0;
+            int cropW = 0;
+            int cropH = 0;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -63,6 +81,26 @@ namespace GauntletUISchemaIndexer
                 else if (args[i] == "--output" && i + 1 < args.Length)
                 {
                     outputPath = args[i + 1];
+                }
+                else if (args[i] == "--extract-sheet" && i + 1 < args.Length)
+                {
+                    extractSheetName = args[i + 1];
+                }
+                else if (args[i] == "--crop-x" && i + 1 < args.Length)
+                {
+                    int.TryParse(args[i + 1], out cropX);
+                }
+                else if (args[i] == "--crop-y" && i + 1 < args.Length)
+                {
+                    int.TryParse(args[i + 1], out cropY);
+                }
+                else if (args[i] == "--crop-w" && i + 1 < args.Length)
+                {
+                    int.TryParse(args[i + 1], out cropW);
+                }
+                else if (args[i] == "--crop-h" && i + 1 < args.Length)
+                {
+                    int.TryParse(args[i + 1], out cropH);
                 }
             }
 
@@ -102,6 +140,12 @@ namespace GauntletUISchemaIndexer
 
             gameBinPath = Path.GetFullPath(gameBinPath);
             outputPath = Path.GetFullPath(outputPath);
+
+            if (!string.IsNullOrEmpty(extractSheetName))
+            {
+                ExtractSheet(gameBinPath, resourcePath, extractSheetName, outputPath, cropX, cropY, cropW, cropH);
+                return;
+            }
             Console.WriteLine($"Game bin path: {gameBinPath}");
             Console.WriteLine($"Resource path: {resourcePath}");
             Console.WriteLine($"Output path: {outputPath}");
@@ -532,38 +576,251 @@ namespace GauntletUISchemaIndexer
             return brushNames.OrderBy(b => b).ToList();
         }
 
-        static List<string> ScanSprites(string resourcePath)
+        static List<SpriteInfoModel> ScanSprites(string resourcePath)
         {
-            var spriteNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Keyed by sprite name (case-insensitive) to deduplicate across files
+            var spriteMap = new Dictionary<string, SpriteInfoModel>(StringComparer.OrdinalIgnoreCase);
+
             if (string.IsNullOrEmpty(resourcePath) || !Directory.Exists(resourcePath))
-                return new List<string>();
+                return new List<SpriteInfoModel>();
 
             var files = Directory.GetFiles(resourcePath, "*.xml", SearchOption.AllDirectories);
             foreach (var file in files)
             {
-                if (Path.GetFileName(file).Contains("SpriteData", StringComparison.OrdinalIgnoreCase))
+                if (!Path.GetFileName(file).Contains("SpriteData", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                try
+                {
+                    var doc = XDocument.Load(file);
+
+                    // 1. Index all SpritePart entries by their Name
+                    //    SpritePart/Name is e.g. "BannerBuilder\align_center"
+                    var spriteParts = new Dictionary<string, SpriteInfoModel>(StringComparer.OrdinalIgnoreCase);
+                    var spritePartsSection = doc.Descendants().Where(el => el.Name.LocalName == "SpritePart"
+                        && el.Parent?.Name.LocalName == "SpriteParts");
+
+                    foreach (var part in spritePartsSection)
+                    {
+                        string partName = part.Element("Name")?.Value;
+                        if (string.IsNullOrEmpty(partName))
+                            continue;
+
+                        int.TryParse(part.Element("Width")?.Value, out int w);
+                        int.TryParse(part.Element("Height")?.Value, out int h);
+                        int.TryParse(part.Element("SheetX")?.Value, out int sx);
+                        int.TryParse(part.Element("SheetY")?.Value, out int sy);
+                        int.TryParse(part.Element("SheetID")?.Value, out int sheetId);
+                        string category = part.Element("CategoryName")?.Value ?? "";
+
+                        spriteParts[partName] = new SpriteInfoModel
+                        {
+                            name = partName, // placeholder, will be overwritten if a Sprite entry references it
+                            categoryName = category,
+                            sheetId = sheetId,
+                            x = sx,
+                            y = sy,
+                            width = w,
+                            height = h
+                        };
+                    }
+
+                    // 2. Parse the <Sprites> section: <SpriteGeneric> and <NineRegionSprite>
+                    //    These map a human-readable Name to a SpritePartName.
+                    var referencedParts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var spritesSection = doc.Descendants().Where(el =>
+                        (el.Name.LocalName == "SpriteGeneric" || el.Name.LocalName == "NineRegionSprite")
+                        && el.Parent?.Name.LocalName == "Sprites");
+
+                    foreach (var sprite in spritesSection)
+                    {
+                        string spriteName = sprite.Element("Name")?.Value;
+                        string spritePartName = sprite.Element("SpritePartName")?.Value;
+                        if (string.IsNullOrEmpty(spriteName))
+                            continue;
+
+                        if (!string.IsNullOrEmpty(spritePartName))
+                            referencedParts.Add(spritePartName);
+
+                        // Look up the SpritePart to get atlas coordinates
+                        if (!string.IsNullOrEmpty(spritePartName) && spriteParts.TryGetValue(spritePartName, out var partInfo))
+                        {
+                            spriteMap[spriteName] = new SpriteInfoModel
+                            {
+                                name = spriteName,
+                                categoryName = partInfo.categoryName,
+                                sheetId = partInfo.sheetId,
+                                x = partInfo.x,
+                                y = partInfo.y,
+                                width = partInfo.width,
+                                height = partInfo.height
+                            };
+                        }
+                        else
+                        {
+                            // Sprite entry with no matching part — add with zero coordinates
+                            if (!spriteMap.ContainsKey(spriteName))
+                            {
+                                spriteMap[spriteName] = new SpriteInfoModel
+                                {
+                                    name = spriteName,
+                                    categoryName = "",
+                                    sheetId = 0,
+                                    x = 0,
+                                    y = 0,
+                                    width = 0,
+                                    height = 0
+                                };
+                            }
+                        }
+                    }
+
+                    // 3. Include SpritePart entries not referenced by any Sprite entry
+                    //    Use the leaf name (after the last backslash) as the sprite name
+                    foreach (var kvp in spriteParts)
+                    {
+                        if (referencedParts.Contains(kvp.Key))
+                            continue;
+
+                        string leafName = kvp.Key;
+                        int lastSlash = kvp.Key.LastIndexOf('\\');
+                        if (lastSlash >= 0 && lastSlash < kvp.Key.Length - 1)
+                        {
+                            leafName = kvp.Key.Substring(lastSlash + 1);
+                        }
+
+                        if (!spriteMap.ContainsKey(leafName))
+                        {
+                            var info = kvp.Value;
+                            spriteMap[leafName] = new SpriteInfoModel
+                            {
+                                name = leafName,
+                                categoryName = info.categoryName,
+                                sheetId = info.sheetId,
+                                x = info.x,
+                                y = info.y,
+                                width = info.width,
+                                height = info.height
+                            };
+                        }
+                    }
+                }
+                catch { }
+            }
+            return spriteMap.Values.OrderBy(s => s.name).ToList();
+        }
+
+        static void ExtractSheet(string gameBinPath, string resourcePath, string sheetName, string outputPath, int cropX = 0, int cropY = 0, int cropW = 0, int cropH = 0)
+        {
+            try
+            {
+                var tpacPaths = new List<string>();
+                
+                if (!string.IsNullOrEmpty(gameBinPath) && Directory.Exists(gameBinPath))
+                {
+                    string gameRoot = Path.GetFullPath(Path.Combine(gameBinPath, "..", ".."));
+                    string modulesPath = Path.Combine(gameRoot, "Modules");
+                    if (Directory.Exists(modulesPath))
+                    {
+                        tpacPaths.AddRange(Directory.GetFiles(modulesPath, "gauntlet_ui.tpac", SearchOption.AllDirectories));
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(resourcePath) && Directory.Exists(resourcePath))
+                {
+                    foreach (var file in Directory.GetFiles(resourcePath, "gauntlet_ui.tpac", SearchOption.AllDirectories))
+                    {
+                        if (!tpacPaths.Contains(file))
+                        {
+                            tpacPaths.Add(file);
+                        }
+                    }
+                }
+
+                if (tpacPaths.Count == 0)
+                {
+                    Console.Error.WriteLine("Error: Could not locate any gauntlet_ui.tpac files.");
+                    Environment.Exit(1);
+                }
+
+                TpacTool.Lib.Texture? targetTexture = null;
+                string foundTpacPath = "";
+
+                foreach (var tpacPath in tpacPaths)
                 {
                     try
                     {
-                        var doc = System.Xml.Linq.XDocument.Load(file);
-                        var elements = doc.Descendants().Where(el => el.Name.LocalName == "SpritePart" || el.Name.LocalName == "Sprite" || el.Name.LocalName == "SpriteGeneric");
-                        foreach (var el in elements)
+                        Console.WriteLine($"Checking TPAC file: {tpacPath}");
+                        var package = new TpacTool.Lib.AssetPackage(tpacPath, true, false);
+                        var textures = package.Items.OfType<TpacTool.Lib.Texture>().ToList();
+                        Console.WriteLine("Textures: " + string.Join(", ", textures.Select(t => $"{t.Name}({t.Width}x{t.Height})")));
+                        var texture = textures.FirstOrDefault(t => t.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase));
+
+                        if (texture != null)
                         {
-                            string name = el.Attribute("Name")?.Value ?? el.Attribute("id")?.Value;
-                            if (string.IsNullOrEmpty(name))
-                            {
-                                name = el.Element("Name")?.Value ?? el.Element("id")?.Value;
-                            }
-                            if (!string.IsNullOrEmpty(name))
-                            {
-                                spriteNames.Add(name);
-                            }
+                            targetTexture = texture;
+                            foundTpacPath = tpacPath;
+                            break;
                         }
                     }
                     catch { }
                 }
+
+                if (targetTexture == null)
+                {
+                    Console.WriteLine($"Texture '{sheetName}' not found in gauntlet_ui.tpac. Scanning all TPAC files in Modules...");
+                    if (!string.IsNullOrEmpty(gameBinPath) && Directory.Exists(gameBinPath))
+                    {
+                        string gameRoot = Path.GetFullPath(Path.Combine(gameBinPath, "..", ".."));
+                        string modulesPath = Path.Combine(gameRoot, "Modules");
+                        if (Directory.Exists(modulesPath))
+                        {
+                            var allTpacFiles = Directory.GetFiles(modulesPath, "*.tpac", SearchOption.AllDirectories);
+                            foreach (var tpacPath in allTpacFiles)
+                            {
+                                try
+                                {
+                                    var package = new TpacTool.Lib.AssetPackage(tpacPath, true, false);
+                                    var textures = package.Items.OfType<TpacTool.Lib.Texture>().ToList();
+                                    var texture = textures.FirstOrDefault(t => t.Name.Equals(sheetName, StringComparison.OrdinalIgnoreCase));
+
+                                    if (texture != null)
+                                    {
+                                        targetTexture = texture;
+                                        foundTpacPath = tpacPath;
+                                        Console.WriteLine($"Found '{sheetName}' in '{tpacPath}'!");
+                                        break;
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                    }
+                }
+
+                if (targetTexture == null)
+                {
+                    Console.Error.WriteLine($"Error: Texture '{sheetName}' not found in any TPAC files.");
+                    Environment.Exit(2);
+                }
+
+                Console.WriteLine($"Found sheet '{targetTexture.Name}' in '{foundTpacPath}' ({targetTexture.Width}x{targetTexture.Height}, format: {targetTexture.Format}).");
+                string? dir = Path.GetDirectoryName(outputPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                Console.WriteLine($"Exporting to: {outputPath} (Crop: {cropW}x{cropH} at {cropX},{cropY})");
+                TpacTool.IO.TextureExporter.ExportToFile(outputPath, targetTexture, TpacTool.IO.TextureExporter.TextureExportOption.NoMipmap, cropX, cropY, cropW, cropH);
+                Console.WriteLine("Extraction complete!");
             }
-            return spriteNames.OrderBy(s => s).ToList();
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error during sheet extraction: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                Environment.Exit(3);
+            }
         }
     }
 }
